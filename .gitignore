@@ -43,5 +43,3 @@ dist/
 day08/lab/chroma_db/
 day08/lab/reports/
 
-# Grading questions (do not publish before 17:00)
-day08/lab/data/grading_questions.json
