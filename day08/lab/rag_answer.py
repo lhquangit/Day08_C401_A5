@@ -20,11 +20,12 @@ Definition of Done Sprint 3:
   ✓ Có ít nhất 1 variant (hybrid / rerank / query transform) chạy được
   ✓ Giải thích được tại sao chọn biến đó để tune
 """
-
 import os
 import json
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
+from datetime import datetime
+from pathlib import Path
 
 load_dotenv()
 
@@ -395,6 +396,8 @@ def rag_answer(
     top_k_search: int = TOP_K_SEARCH,
     top_k_select: int = TOP_K_SELECT,
     use_rerank: bool = False,
+    use_transform: bool = False,
+    transform_strategy: str = "expansion",
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -406,45 +409,51 @@ def rag_answer(
         top_k_search: Số chunk lấy từ vector store (search rộng)
         top_k_select: Số chunk đưa vào prompt (sau rerank/select)
         use_rerank: Có dùng cross-encoder rerank không
+        use_transform: Có dùng query transformation không
+        transform_strategy: Chiến thuật biến đổi ("expansion", "decomposition", "hyde")
         verbose: In thêm thông tin debug
-
-    Returns:
-        Dict với:
-          - "answer": câu trả lời grounded
-          - "sources": list source names trích dẫn
-          - "chunks_used": list chunks đã dùng
-          - "query": query gốc
-          - "config": cấu hình pipeline đã dùng
-
-    TODO Sprint 2 — Implement pipeline cơ bản:
-    1. Chọn retrieval function dựa theo retrieval_mode
-    2. Gọi rerank() nếu use_rerank=True
-    3. Truncate về top_k_select chunks
-    4. Build context block và grounded prompt
-    5. Gọi call_llm() để sinh câu trả lời
-    6. Trả về kết quả kèm metadata
-
-    TODO Sprint 3 — Thử các variant:
-    - Variant A: đổi retrieval_mode="hybrid"
-    - Variant B: bật use_rerank=True
-    - Variant C: thêm query transformation trước khi retrieve
     """
     config = {
         "retrieval_mode": retrieval_mode,
         "top_k_search": top_k_search,
         "top_k_select": top_k_select,
         "use_rerank": use_rerank,
+        "use_transform": use_transform,
+        "transform_strategy": transform_strategy,
     }
 
+    # --- Bước 0: Transform Query (Sprint 3) ---
+    queries = [query]
+    if use_transform:
+        queries = transform_query(query, strategy=transform_strategy)
+        if verbose:
+            print(f"[Transform] Original: {query}")
+            print(f"[Transform] Expanded to {len(queries)} queries.")
+
     # --- Bước 1: Retrieve ---
-    if retrieval_mode == "dense":
-        candidates = retrieve_dense(query, top_k=top_k_search)
-    elif retrieval_mode == "sparse":
-        candidates = retrieve_sparse(query, top_k=top_k_search)
-    elif retrieval_mode == "hybrid":
-        candidates = retrieve_hybrid(query, top_k=top_k_search)
-    else:
-        raise ValueError(f"retrieval_mode không hợp lệ: {retrieval_mode}")
+    unique_candidates: Dict[str, Dict] = {} # key = text + source để tránh trùng
+
+    for q in queries:
+        if retrieval_mode == "dense":
+            candidates = retrieve_dense(q, top_k=top_k_search)
+        elif retrieval_mode == "sparse":
+            candidates = retrieve_sparse(q, top_k=top_k_search)
+        elif retrieval_mode == "hybrid":
+            candidates = retrieve_hybrid(q, top_k=top_k_search)
+        else:
+            raise ValueError(f"retrieval_mode không hợp lệ: {retrieval_mode}")
+        
+        for cand in candidates:
+            # key deduplication
+            ckey = f"{cand['text'][:100]}||{cand['metadata'].get('source','')}"
+            if ckey not in unique_candidates:
+                unique_candidates[ckey] = cand
+            else:
+                # Nếu đã có, giữ lại cái có score cao hơn (tùy chỉnh nếu cần)
+                if cand.get("score", 0) > unique_candidates[ckey].get("score", 0):
+                    unique_candidates[ckey] = cand
+
+    candidates = list(unique_candidates.values())
 
     if verbose:
         print(f"\n[RAG] Query: {query}")
@@ -522,109 +531,21 @@ def compare_retrieval_strategies(query: str) -> None:
 # MAIN — Demo và Test
 # =============================================================================
 
-# =============================================================================
-# GRADING LOG — Tạo logs/grading_run.json đúng format SCORING.md
-# =============================================================================
-
-def run_grading(
-    questions_path: str = "data/grading_questions.json",
-    retrieval_mode: str = "hybrid",
-    use_rerank: bool = True,
-    output_path: str = "logs/grading_run.json",
-) -> None:
-    """
-    Chạy pipeline với grading_questions.json và ghi log đúng format SCORING.md:
-
-    [
-      {
-        "id": "gq01",
-        "question": "...",
-        "answer": "...",
-        "sources": [...],
-        "chunks_retrieved": 3,
-        "retrieval_mode": "hybrid",
-        "timestamp": "2026-04-12T17:23:45"
-      },
-      ...
-    ]
-
-    Chạy khi grading_questions.json được public lúc 17:00.
-    """
-    from datetime import datetime
-    from pathlib import Path
-    import json
-
-    q_path = Path(questions_path)
-    if not q_path.exists():
-        print(f"[run_grading] File chưa có: {q_path}")
-        print("  → File này được public lúc 17:00. Chạy lại sau khi có file.")
-        return
-
-    with open(q_path, "r", encoding="utf-8") as f:
-        questions = json.load(f)
-
-    print(f"\n[Grading] Chạy {len(questions)} câu hỏi (mode={retrieval_mode}, rerank={use_rerank})")
-
-    log = []
-    for q in questions:
-        qid = q["id"]
-        question = q["question"]
-        print(f"  [{qid}] {question[:60]}...")
-        try:
-            result = rag_answer(
-                query=question,
-                retrieval_mode=retrieval_mode,
-                use_rerank=use_rerank,
-                verbose=False,
-            )
-            log.append({
-                "id": qid,
-                "question": question,
-                "answer": result["answer"],
-                "sources": result["sources"],
-                "chunks_retrieved": len(result["chunks_used"]),
-                "retrieval_mode": result["config"]["retrieval_mode"],
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-            })
-        except Exception as e:
-            log.append({
-                "id": qid,
-                "question": question,
-                "answer": f"PIPELINE_ERROR: {e}",
-                "sources": [],
-                "chunks_retrieved": 0,
-                "retrieval_mode": retrieval_mode,
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-            })
-
-    # Ghi log
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
-
-    print(f"\n[Grading] Đã ghi {len(log)} kết quả vào: {out_path}")
-
-
 def run_comparison_log(
-    questions_path: str = "data/test_questions.json",
+    questions: List[Dict] = None,
     output_path: str = "logs/comparison_results.json",
 ) -> None:
     """
-    Chạy pipeline với cả 3 mode (dense, sparse, hybrid) và lưu vào 1 file JSON duy nhất.
-    Giúp phục vụ việc điền docs/tuning-log.md và so sánh A/B.
+    Chạy pipeline với cả 3 mode (dense, sparse, hybrid) cho một danh sách câu hỏi
+    và lưu vào 1 file JSON duy nhất.
     """
     from datetime import datetime
     from pathlib import Path
     import json
 
-    q_path = Path(questions_path)
-    if not q_path.exists():
-        print(f"[run_comparison_log] File chưa có: {q_path}")
+    if not questions:
+        print("[run_comparison_log] Không có câu hỏi nào để xử lý.")
         return
-
-    with open(q_path, "r", encoding="utf-8") as f:
-        questions = json.load(f)
 
     print(f"\n[Comparison] Đang chạy so sánh 3 mode cho {len(questions)} câu hỏi...")
 
@@ -665,6 +586,108 @@ def run_comparison_log(
     print(f"\n[Comparison] Đã ghi kết quả so sánh vào: {out_path}")
 
 
+def run_rerank_comparison_log(questions, output_path="logs/rerank_results.json"):
+    """
+    Chạy so sánh A/B cho Sprint 3: Dense (Baseline) vs Dense + Rerank (Variant)
+    """
+    print(f"\n[Sprint 3] Đang chạy so sánh Reranking cho {len(questions)} câu hỏi...")
+    rerank_log = []
+
+    for q in questions:
+        qid = q.get("id", "??")
+        question = q["question"]
+        print(f"  [{qid}] Đang đánh giá Rerank...")
+
+        entry = {
+            "id": qid,
+            "question": question,
+            "results": {}
+        }
+
+        # Cấu hình A: Baseline (Dense - No Rerank)
+        try:
+            res_a = rag_answer(query=question, retrieval_mode="dense", use_rerank=False, verbose=False)
+            entry["results"]["baseline_dense"] = {
+                "answer": res_a["answer"],
+                "sources": res_a["sources"]
+            }
+        except Exception as e:
+            entry["results"]["baseline_dense"] = {"error": str(e)}
+
+        # Cấu hình B: Variant (Dense + Rerank)
+        try:
+            res_b = rag_answer(query=question, retrieval_mode="dense", use_rerank=True, verbose=False)
+            entry["results"]["variant_rerank"] = {
+                "answer": res_b["answer"],
+                "sources": res_b["sources"]
+            }
+        except Exception as e:
+            entry["results"]["variant_rerank"] = {"error": str(e)}
+
+        entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        rerank_log.append(entry)
+
+    # Ghi log
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(rerank_log, f, ensure_ascii=False, indent=2)
+
+    print(f"\n[Sprint 3] Đã ghi kết quả Reranking vào: {out_path}")
+
+
+def run_transform_comparison_log(questions, output_path="logs/transform_results.json"):
+    """
+    Chạy so sánh tác động của Query Transformation cho cả 3 mode: Dense, Sparse, Hybrid
+    """
+    print(f"\n[Sprint 3] Đang đánh giá Query Transformation cho {len(questions)} câu hỏi...")
+    transform_log = []
+
+    for q in questions:
+        qid = q.get("id", "??")
+        question = q["question"]
+        print(f"  [{qid}] Đang đánh giá Transform...")
+
+        entry = {
+            "id": qid,
+            "question": question,
+            "results": {}
+        }
+
+        # Duyệt qua 3 mode, mỗi mode chạy 2 bản: No-Transform vs Transform
+        for mode in ["dense", "sparse", "hybrid"]:
+            # 1. No Transform (Baseline)
+            try:
+                res_baseline = rag_answer(query=question, retrieval_mode=mode, use_transform=False, verbose=False)
+                entry["results"][f"{mode}_no_transform"] = {
+                    "answer": res_baseline["answer"],
+                    "sources": res_baseline["sources"]
+                }
+            except Exception as e:
+                entry["results"][f"{mode}_no_transform"] = {"error": str(e)}
+
+            # 2. With Transform (Variant)
+            try:
+                res_variant = rag_answer(query=question, retrieval_mode=mode, use_transform=True, transform_strategy="expansion", verbose=False)
+                entry["results"][f"{mode}_with_transform"] = {
+                    "answer": res_variant["answer"],
+                    "sources": res_variant["sources"]
+                }
+            except Exception as e:
+                entry["results"][f"{mode}_with_transform"] = {"error": str(e)}
+
+        entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        transform_log.append(entry)
+
+    # Ghi log
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(transform_log, f, ensure_ascii=False, indent=2)
+
+    print(f"\n[Sprint 3] Đã ghi kết quả Transformation vào: {out_path}")
+
+
 # =============================================================================
 # MAIN — Demo và Test
 # =============================================================================
@@ -680,19 +703,26 @@ if __name__ == "__main__":
     print("Sprint 2 + 3: RAG Answer Pipeline")
     print("=" * 60)
 
-    # Load test queries từ data/test_questions.json
+    # Load test queries từ data/test.json (đã gộp)
+    all_questions = []
+    test_json_path = "data/test.json"
+    
     try:
-        with open("data/test_questions.json", "r", encoding="utf-8") as f:
-            test_data = json.load(f)
-            test_queries = [q["question"] for q in test_data]
+        with open(test_json_path, "r", encoding="utf-8") as f:
+            all_questions = json.load(f)
+            print(f"[Info] Đã load {len(all_questions)} câu hỏi từ {test_json_path}")
     except FileNotFoundError:
-        print("[Warning] data/test_questions.json không tìm thấy, dùng mẫu mặc định.")
+        print(f"[Warning] {test_json_path} không tìm thấy, dùng mẫu mặc định.")
+
+    if not all_questions:
         test_queries = [
             "SLA xử lý ticket P1 là bao lâu?",
             "Khách hàng có thể yêu cầu hoàn tiền trong bao nhiêu ngày?",
             "Ai phải phê duyệt để cấp quyền Level 3?",
             "Mức phạt vi phạm SLA P1 là bao nhiêu?",
         ]
+    else:
+        test_queries = [q["question"] for q in all_questions]
 
     # -------------------------------------------------------------------------
     # Sprint 2 & 3: Retrieval Comparison (Dense vs Hybrid)
@@ -709,7 +739,6 @@ if __name__ == "__main__":
         for mode in ["dense", "sparse", "hybrid"]:
             print(f"\n--- Strategy: {mode} ---")
             try:
-                # Chạy với verbose=False để đỡ rối, chỉ in kết quả cuối
                 result = rag_answer(query, retrieval_mode=mode, verbose=False)
                 print(f"Answer: {result['answer']}")
                 print(f"Sources: {result['sources']}")
@@ -717,7 +746,7 @@ if __name__ == "__main__":
                 print(f"Lỗi strategy {mode}: {e}")
 
     # -------------------------------------------------------------------------
-    # Sprint 3 Variant B: Dense + Rerank (A/B test — cử MỘT biến)
+    # Sprint 3 Variant B: Dense + Rerank (A/B test)
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("SPRINT 3 — Variant B: Dense + Rerank (A/B)")
@@ -733,19 +762,38 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Lỗi: {e}")
 
-    # -------------------------------------------------------------------------
-    # Comparison Log — Xuất ra file JSON so sánh cả 3 mode
-    # -------------------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("COMPARISON LOG — Tạo logs/comparison_results.json")
-    print("=" * 60)
-    run_comparison_log(
-        questions_path="data/test_questions.json",
-        output_path="logs/comparison_results.json"
-    )
 
-    print("\n" + "=" * 60)
-    print("✅ Sprint 2 + Sprint 3 hoàn thành!")
-    print("   → Tiếp theo: python eval.py để chạy scorecard Sprint 4")
-    print("   → Xem file so sánh tại: logs/comparison_results.json")
-    print("=" * 60)
+# Uncomment để chạy log
+
+    # # -------------------------------------------------------------------------
+    # # Comparison Log - So sánh 3 mode
+    # # -------------------------------------------------------------------------
+    # print("\n" + "=" * 60)
+    # print("COMPARISON LOG — Tạo logs/comparison_results.json")
+    # print("=" * 60)
+    # run_comparison_log(
+    #     questions=all_questions,
+    #     output_path="logs/comparison_results.json"
+    # )
+
+    # # -------------------------------------------------------------------------
+    # # Dense + Rerank Comparison Log - So sánh dense vs dense + rerank
+    # # -------------------------------------------------------------------------
+    # print("\n" + "=" * 60)
+    # print("SPRINT 3 LOG — Tạo logs/rerank_results.json")
+    # print("=" * 60)
+    # run_rerank_comparison_log(
+    #     questions=all_questions,
+    #     output_path="logs/rerank_results.json"
+    # )
+
+    # # -------------------------------------------------------------------------
+    # # Query Transformation Comparison Log - So sánh 3 mode
+    # # -------------------------------------------------------------------------
+    # print("\n" + "=" * 60)
+    # print("TRANSFORM LOG — Tạo logs/transform_results.json")
+    # print("=" * 60)
+    # run_transform_comparison_log(
+    #     questions=all_questions,
+    #     output_path="logs/transform_results.json"
+    # )
