@@ -4,13 +4,13 @@
 **Thành viên:**
 
 
-| Tên              | Vai trò                        | Email                                                   |
-| ---------------- | ------------------------------ | ------------------------------------------------------- |
-| Lê Hồng Quân     | Tech Lead, Documentation Owner | [hongquanliv@gmail.com](mailto:hongquanliv@gmail.com)   |
-| Đoàn Sĩ Linh     | Retrieval Owner                | [doansilinh04@gmail.com](mailto:doansilinh04@gmail.com) |
-| Nguyễn Đức Hải   | Eval Owner                     | `[Chưa cung cấp]`                                       |
-| Phạm Thanh Lam   | Index Owner                    | [lamphamaudio@gmail.com](mailto:lamphamaudio@gmail.com) |
-| Dương Trung Hiếu | Tester, Document Writer        | [duonghieu734@gmail.com](mailto:duonghieu734@gmail.com) |
+| Tên              | Vai trò                        | Email                                                     |
+| ---------------- | ------------------------------ | --------------------------------------------------------- |
+| Lê Hồng Quân     | Tech Lead, Documentation Owner | [hongquanliv@gmail.com](mailto:hongquanliv@gmail.com)     |
+| Đoàn Sĩ Linh     | Retrieval Owner                | [doansilinh04@gmail.com](mailto:doansilinh04@gmail.com)   |
+| Nguyễn Đức Hải   | Eval Owner                     | [nguyenhai6586@gmail.com](mailto:nguyenhai6586@gmail.com) |
+| Phạm Thanh Lam   | Index Owner                    | [lamphamaudio@gmail.com](mailto:lamphamaudio@gmail.com)   |
+| Dương Trung Hiếu | Tester, Document Writer        | [duonghieu734@gmail.com](mailto:duonghieu734@gmail.com)   |
 
 
 **Ngày nộp:** `2026-04-13`  
