@@ -17,23 +17,32 @@ Gọi độc lập để test:
 
 import os
 import sys
-
-# ─────────────────────────────────────────────
-# Worker Contract (xem contracts/worker_contracts.yaml)
-# Input:  {"task": str, "top_k": int = 3}
-# Output: {"retrieved_chunks": list, "retrieved_sources": list, "error": dict | None}
-# ─────────────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv()
 
 WORKER_NAME = "retrieval_worker"
-DEFAULT_TOP_K = 3
+DEFAULT_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", 3))
 
 
 def _get_embedding_fn():
     """
     Trả về embedding function.
-    TODO Sprint 1: Implement dùng OpenAI hoặc Sentence Transformers.
+    Quan trọng: Phải khớp với model đã dùng để build index ở Day 08 (OpenAI).
     """
-    # Option A: Sentence Transformers (offline, không cần API key)
+    # Ưu tiên OpenAI (cần API key) vì Day 08 dùng model này
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            def embed(text: str) -> list:
+                resp = client.embeddings.create(input=text, model="text-embedding-3-small")
+                return resp.data[0].embedding
+            return embed
+        except ImportError:
+            print("⚠️  Không tìm thấy thư viện 'openai'. Đang thử fallback...")
+
+    # Option B: Sentence Transformers
     try:
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -43,41 +52,35 @@ def _get_embedding_fn():
     except ImportError:
         pass
 
-    # Option B: OpenAI (cần API key)
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        def embed(text: str) -> list:
-            resp = client.embeddings.create(input=text, model="text-embedding-3-small")
-            return resp.data[0].embedding
-        return embed
-    except ImportError:
-        pass
-
-    # Fallback: random embeddings cho test (KHÔNG dùng production)
+    # Fallback: random embeddings cho test (KHÔNG dùng cho production)
     import random
     def embed(text: str) -> list:
         return [random.random() for _ in range(384)]
-    print("⚠️  WARNING: Using random embeddings (test only). Install sentence-transformers.")
+    print("⚠️  WARNING: Using random embeddings. Vui lòng kiểm tra API Key hoặc cài đặt thư viện.")
     return embed
 
 
 def _get_collection():
     """
     Kết nối ChromaDB collection.
-    TODO Sprint 2: Đảm bảo collection đã được build từ Step 3 trong README.
+    Lấy thông tin từ .env hoặc mặc định trỏ về Day 08 nếu cần.
     """
     import chromadb
-    client = chromadb.PersistentClient(path="./chroma_db")
+    
+    # Lấy path từ .env, nếu không có thì trỏ sang Day 08
+    db_path = os.getenv("CHROMA_DB_PATH", "../../day08/lab/chroma_db")
+    collection_name = os.getenv("CHROMA_COLLECTION", "rag_lab")
+    
+    client = chromadb.PersistentClient(path=db_path)
     try:
-        collection = client.get_collection("day09_docs")
+        collection = client.get_collection(collection_name)
     except Exception:
         # Auto-create nếu chưa có
         collection = client.get_or_create_collection(
-            "day09_docs",
+            collection_name,
             metadata={"hnsw:space": "cosine"}
         )
-        print(f"⚠️  Collection 'day09_docs' chưa có data. Chạy index script trong README trước.")
+        print(f"⚠️  Collection '{collection_name}' không tồn tại tại {db_path}. Vui lòng kiểm tra lại.")
     return collection
 
 
