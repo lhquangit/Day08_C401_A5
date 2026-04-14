@@ -1,5 +1,5 @@
 {
-  "task": "Theo quy định IT nội bộ, nhân viên phải đổi mật khẩu sau bao nhiêu ngày? Và hệ thống cảnh báo trước bao nhiêu ngày?",
+  "task": "Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?",
   "route_reason": "no explicit policy/error keyword → fallback retrieval",
   "risk_high": false,
   "needs_tool": false,
@@ -8,36 +8,36 @@
     {
       "text": "Q: Tôi quên mật khẩu, phải làm gì?\nA: Truy cập https://sso.company.internal/reset hoặc liên hệ Helpdesk qua ext. 9000. Mật khẩu mới sẽ được gửi qua email công ty trong vòng 5 phút.\n\nQ: Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?\nA: Tài khoản bị khóa sau 5 lần đăng nhập sai liên tiếp. Để mở khóa, liên hệ IT Helpdesk hoặc tự reset qua portal SSO.\n\nQ: Mật khẩu cần thay đổi định kỳ không?\nA: Có. Mật khẩu phải được thay đổi mỗi 90 ngày. Hệ thống sẽ nhắc nhở 7 ngày trước khi hết hạn.",
       "source": "support/helpdesk-faq.md",
-      "score": 0.7158,
+      "score": 0.6279,
       "metadata": {
-        "section": "Section 1: Tài khoản và mật khẩu",
-        "access": "internal",
         "department": "IT",
+        "section": "Section 1: Tài khoản và mật khẩu",
+        "source": "support/helpdesk-faq.md",
         "effective_date": "2026-01-20",
-        "source": "support/helpdesk-faq.md"
+        "access": "internal"
       }
     },
     {
       "text": "IT Security thực hiện access review mỗi 6 tháng.\nMọi bất thường phải được báo cáo lên CISO trong vòng 24 giờ.",
       "source": "it/access-control-sop.md",
-      "score": 0.5699,
+      "score": 0.4564,
       "metadata": {
-        "access": "internal",
-        "source": "it/access-control-sop.md",
-        "department": "IT Security",
         "section": "Section 6: Audit và review định kỳ",
+        "access": "internal",
+        "department": "IT Security",
+        "source": "it/access-control-sop.md",
         "effective_date": "2026-01-01"
       }
     },
     {
-      "text": "Q: Laptop mới được cấp sau bao lâu khi vào công ty?\nA: Laptop được cấp trong ngày onboarding đầu tiên. Nếu có vấn đề, liên hệ HR hoặc IT Admin.\n\nQ: Laptop bị hỏng phải báo cáo như thế nào?\nA: Tạo ticket P2 hoặc P3 tùy mức độ nghiêm trọng. Mang thiết bị đến IT Room (tầng 3) để kiểm tra.",
+      "text": "Q: Phần mềm VPN nào công ty dùng?\nA: Công ty sử dụng Cisco AnyConnect. Download tại https://vpn.company.internal/download.\n\nQ: Tôi bị mất kết nối VPN liên tục, phải làm gì?\nA: Kiểm tra kết nối Internet trước. Nếu vẫn lỗi, tạo ticket P3 với log file VPN đính kèm.\n\nQ: VPN có giới hạn số thiết bị không?\nA: Mỗi tài khoản được kết nối VPN trên tối đa 2 thiết bị cùng lúc.",
       "source": "support/helpdesk-faq.md",
-      "score": 0.5013,
+      "score": 0.393,
       "metadata": {
+        "department": "IT",
         "effective_date": "2026-01-20",
         "access": "internal",
-        "department": "IT",
-        "section": "Section 4: Thiết bị và phần cứng",
+        "section": "Section 2: VPN và kết nối từ xa",
         "source": "support/helpdesk-faq.md"
       }
     }
@@ -52,7 +52,7 @@
     {
       "worker": "retrieval_worker",
       "input": {
-        "task": "Theo quy định IT nội bộ, nhân viên phải đổi mật khẩu sau bao nhiêu ngày? Và hệ thống cảnh báo trước bao nhiêu ngày?",
+        "task": "Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?",
         "top_k": 3
       },
       "output": {
@@ -72,44 +72,44 @@
     {
       "worker": "synthesis_worker",
       "input": {
-        "task": "Theo quy định IT nội bộ, nhân viên phải đổi mật khẩu sau bao nhiêu ngày? Và hệ thống cảnh báo trước bao nhiêu ngày?",
+        "task": "Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?",
         "chunks_count": 3,
         "has_policy": false
       },
       "output": {
-        "answer_length": 106,
+        "answer_length": 129,
         "sources": [
           "support/helpdesk-faq.md",
           "it/access-control-sop.md"
         ],
-        "confidence": 0.85,
+        "confidence": 0.95,
         "generation_mode": "llm"
       },
       "error": null
     }
   ],
   "error": null,
-  "final_answer": "Nhân viên phải đổi mật khẩu sau 90 ngày và hệ thống sẽ cảnh báo trước 7 ngày khi mật khẩu sắp hết hạn [1].",
+  "final_answer": "Tài khoản bị khóa sau 5 lần đăng nhập sai liên tiếp. Để mở khóa, bạn có thể liên hệ IT Helpdesk hoặc tự reset qua portal SSO [1].",
   "sources": [
     "support/helpdesk-faq.md",
     "it/access-control-sop.md"
   ],
-  "confidence": 0.85,
+  "confidence": 0.95,
   "history": [
-    "[supervisor] received task: Theo quy định IT nội bộ, nhân viên phải đổi mật khẩu sau bao nhiêu ngày? Và hệ thống cảnh báo trước bao nhiêu ngày?",
+    "[supervisor] received task: Tài khoản bị khóa sau bao nhiêu lần đăng nhập sai?",
     "[supervisor] route=retrieval_worker reason=no explicit policy/error keyword → fallback retrieval",
     "[graph] dispatch -> retrieval_worker",
     "[retrieval_worker] retrieved 3 chunks from ['support/helpdesk-faq.md', 'it/access-control-sop.md'] via local_day09_on_day08_index mode=dense collection=rag_lab",
     "[graph] dispatch -> synthesis_worker",
-    "[synthesis_worker] answer generated via llm, confidence=0.85, sources=['support/helpdesk-faq.md', 'it/access-control-sop.md']",
-    "[graph] completed in 3436ms"
+    "[synthesis_worker] answer generated via llm, confidence=0.95, sources=['support/helpdesk-faq.md', 'it/access-control-sop.md']",
+    "[graph] completed in 3743ms"
   ],
   "workers_called": [
     "retrieval_worker",
     "synthesis_worker"
   ],
   "supervisor_route": "retrieval_worker",
-  "latency_ms": 3436,
-  "run_id": "run_20260414_173826",
-  "question_id": "gq08"
+  "latency_ms": 3743,
+  "run_id": "run_20260414_180413",
+  "question_id": "q04"
 }

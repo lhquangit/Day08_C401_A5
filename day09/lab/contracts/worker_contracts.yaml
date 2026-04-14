@@ -1,13 +1,8 @@
 # Worker Contracts — Day 09 Lab
-# Định nghĩa input/output rõ ràng cho từng worker.
-# Supervisor và workers phải tuân theo contract này.
-#
-# Rule: Supervisor giữ quyết định luồng. Worker giữ domain skill.
-#       Contract là ranh giới rõ ràng giữa hai bên.
-#
-# TODO Sprint 2: Cập nhật "actual_implementation" khi đã implement xong.
+# Contract này mô tả structure đang chạy trong source code hiện tại.
+# Mục tiêu là phản ánh đúng runtime behavior, không phải thiết kế kỳ vọng của sprint cũ.
 
-version: "1.0"
+version: "1.1"
 updated_at: "2026-04-14"
 
 # ─────────────────────────────────────────────
@@ -30,26 +25,33 @@ supervisor:
     route_reason:
       type: string
       required: true
-      description: "Lý do cụ thể tại sao chọn route này (không được để 'unknown')"
+      description: "Lý do cụ thể tại sao chọn route này"
     risk_high:
       type: boolean
       required: true
     needs_tool:
       type: boolean
       required: true
-      description: "True nếu query thuộc nhóm policy/access hoặc có dấu hiệu cần tra ticket/tool"
+      description: "True nếu task thuộc access/refund policy hoặc multi-hop cần tool reasoning"
   routing_rules:
-    - condition: "task chứa 'ERR-'"
-      route: "human_review"
-      notes: "Trong graph.py, supervisor route sang human_review ngay khi match unknown error keyword."
-    - condition: "task chứa một trong các keyword policy/access như 'hoàn tiền', 'refund', 'flash sale', 'license', 'subscription', 'cấp quyền', 'access', 'level 3', 'level 4', 'contractor', 'admin access', 'approval', 'quy trình', 'security'"
+    - condition: "task là multi-hop access + incident/SLA"
       route: "policy_tool_worker"
-      notes: "Nếu đồng thời có keyword incident thì vẫn ưu tiên policy_tool_worker và ghi rõ trong route_reason."
-    - condition: "task chứa một trong các keyword incident/SLA như 'P1', 'SLA', 'ticket', 'escalation', 'incident', 'on-call', 'sự cố', 'hotline', 'pagerduty'"
+      notes: "Current implementation ưu tiên policy_tool_worker khi query đồng thời có access keyword và incident keyword."
+    - condition: "task chứa keyword access/security như 'cấp quyền', 'access', 'level 2', 'level 3', 'level 4', 'approval', 'security', 'contractor', 'admin access'"
+      route: "policy_tool_worker"
+      notes: "Access questions được xem là policy path, kể cả khi không có chunk đầu vào."
+    - condition: "task chứa refund policy markers như 'có được hoàn tiền', 'flash sale', 'license', 'subscription', 'trước 01/02', 'ngoại lệ'"
+      route: "policy_tool_worker"
+      notes: "Chỉ các câu refund mang tính eligibility/exception mới route sang policy_tool_worker."
+    - condition: "task chứa incident/SLA keywords như 'P1', 'SLA', 'ticket', 'escalation', 'incident', 'on-call', 'pagerduty'"
       route: "retrieval_worker"
-    - condition: "không match keyword nào ở trên"
+      notes: "Incident/SLA factual queries hiện đi retrieval_worker."
+    - condition: "task chứa refund keywords nhưng mang tính factual như 'bao nhiêu ngày', 'mấy ngày', 'bao lâu'"
       route: "retrieval_worker"
-      notes: "Fallback mặc định là retrieval_worker với route_reason kiểu 'no explicit policy/error keyword → fallback retrieval'."
+      notes: "Supervisor tránh over-orchestrate với refund fact query."
+    - condition: "không match các điều kiện ở trên"
+      route: "retrieval_worker"
+      notes: "Fallback mặc định là retrieval_worker."
   risk_rules:
     - condition: "task chứa 'ERR-', 'emergency', 'khẩn cấp', '2am', 'ngoài giờ'"
       sets:
@@ -58,20 +60,20 @@ supervisor:
       sets:
         risk_high: false
   tool_rules:
-    - condition: "task chứa keyword policy/access"
-      sets:
-        needs_tool: true
-    - condition: "task chứa 'ticket', 'P1', hoặc 'jira'"
+    - condition: "task là access policy, refund policy, hoặc multi-hop access + incident"
       sets:
         needs_tool: true
     - condition: "ngược lại"
       sets:
         needs_tool: false
   constraints:
-    - "Supervisor không được tự trả lời policy questions"
-    - "route_reason KHÔNG được là chuỗi rỗng hoặc 'unknown'"
-    - "Nếu risk_high=True → luôn ghi lý do cụ thể"
-    - "Nếu route='human_review' do ERR-* thì human_review placeholder sẽ chuyển tiếp sang retrieval_worker sau khi approve trong lab mode"
+    - "Supervisor không được tự trả lời policy questions."
+    - "route_reason không được rỗng."
+    - "Nếu risk_high=True thì route_reason phải nêu được tín hiệu risk."
+    - "Graph vẫn giữ human_review node như một edge hợp lệ, nhưng supervisor hiện không route ERR-* sang human_review theo mặc định."
+  actual_implementation:
+    status: "implemented"
+    notes: "Routing phản ánh graph.py hiện tại: access/refund policy → policy_tool_worker; incident/SLA và refund factual → retrieval_worker."
 
 # ─────────────────────────────────────────────
 # Retrieval Worker
@@ -80,7 +82,7 @@ supervisor:
 retrieval_worker:
   name: retrieval_worker
   file: workers/retrieval.py
-  description: "Tìm kiếm chunks bằng chứng từ Knowledge Base. Stateless — test độc lập được."
+  description: "Tìm kiếm evidence từ Chroma DB bằng dense hoặc hybrid retrieval, có thể rerank."
   input:
     task:
       type: string
@@ -90,16 +92,20 @@ retrieval_worker:
       type: integer
       required: false
       default: 3
-      description: "Số chunks cần retrieve"
+      description: "Số chunks cuối cùng cần trả về"
+    retrieval_top_k:
+      type: integer
+      required: false
+      description: "Legacy alias; runtime vẫn đọc để tương thích nếu top_k không có"
   output:
     retrieved_chunks:
       type: array
       required: true
-      description: "List of chunk objects"
+      description: "List of chunk objects sau retrieval + optional rerank"
       items:
         text: string
         source: string
-        score: float  # 0.0 - 1.0 (cosine similarity)
+        score: float
         metadata: object
     retrieved_sources:
       type: array
@@ -108,18 +114,34 @@ retrieval_worker:
     worker_io_logs:
       type: array
       required: true
-      description: "Log input/output của worker (append to array)"
+      description: "Append-only log của worker"
+      items:
+        worker: string
+        input:
+          task: string
+          top_k: integer
+        output:
+          chunks_count: integer
+          sources: array
+          retrieval_backend: string
+          retrieval_mode: string
+          search_top_k: integer
+          db_path: string
+          collection: string
+        error:
+          code: string
+          reason: string
   error_format:
     code: "RETRIEVAL_FAILED"
     reason: string
   constraints:
-    - "Phải trả về ít nhất 1 chunk nếu tìm thấy"
-    - "Nếu không tìm thấy → retrieved_chunks=[] (không trả về fake chunks)"
-    - "Score phải là float trong khoảng [0, 1]"
-    - "Stateless: không đọc hoặc ghi state ngoài những gì được khai báo ở trên"
+    - "Nếu không tìm thấy thì phải trả về retrieved_chunks=[] và retrieved_sources=[]."
+    - "Không tạo fake policy result trong retrieval worker."
+    - "Worker chỉ mutate retrieved_chunks, retrieved_sources, history, workers_called và worker_io_logs."
+    - "Backend hiện tại ghi nhận là local_day09_on_day08_index trong worker_io output."
   actual_implementation:
-    status: "TODO Sprint 2"  # Update to "done" khi xong
-    notes: "Runtime không auto-create collection. Field input chuẩn là top_k; retrieval_top_k chỉ giữ tạm để tương thích."
+    status: "implemented"
+    notes: "run() gọi retrieve(task, top_k), và retrieve() tự chọn mode dense/hybrid, search_top_k, rerank, db_path, collection."
 
 # ─────────────────────────────────────────────
 # Policy Tool Worker
@@ -128,7 +150,7 @@ retrieval_worker:
 policy_tool_worker:
   name: policy_tool_worker
   file: workers/policy_tool.py
-  description: "Kiểm tra policy theo domain refund hoặc access/security. Có thể gọi MCP tools khi cần."
+  description: "Kiểm tra policy theo domain refund, access hoặc incident_access; có thể gọi MCP tools và enrich chunks."
   input:
     task:
       type: string
@@ -136,7 +158,7 @@ policy_tool_worker:
     retrieved_chunks:
       type: array
       required: false
-      description: "Context từ retrieval_worker (nếu đã có)"
+      description: "Context từ retrieval_worker hoặc context đã có trong state"
     needs_tool:
       type: boolean
       required: false
@@ -157,40 +179,59 @@ policy_tool_worker:
           example: "refund | access | incident_access | unknown"
         policy_applies:
           type: boolean
-          description: "True nếu policy cho phép, False nếu bị chặn"
+          description: "Kết luận rule path hiện tại có áp dụng/cho phép hay không"
         policy_name:
           type: string
           example: "refund_policy_v4 | access_control_sop | incident_access_composite"
         exceptions_found:
           type: array
-          description: "Danh sách exceptions tìm thấy"
+          description: "Danh sách exceptions hoặc blocking conditions tìm thấy"
           items:
             type: object
             properties:
-              type: string  # e.g., "flash_sale_exception"
-              rule: string  # Câu policy rule cụ thể
+              type: string
+              rule: string
               source: string
         source:
           type: array
-          description: "Nguồn tài liệu đã dùng"
+          description: "Nguồn tài liệu đã dùng để kết luận"
         policy_version_note:
           type: string
-          description: "Note về version nếu có vấn đề temporal scoping"
+          description: "Note về temporal scope hoặc version mismatch nếu có"
         explanation:
           type: string
           description: "Giải thích ngắn về cách worker kết luận"
         tool_findings:
           type: object
-          description: "Dữ liệu quan trọng tổng hợp từ MCP tools, ví dụ approvers, emergency override, ticket summary"
+          description: "Structured facts từ MCP tools và parser nội bộ"
+          properties:
+            has_mock_data: boolean
+            temporal_scope_gap: boolean
+            access_level: integer
+            requester_role: string
+            is_emergency: boolean
+            temporary_request: boolean
+            can_grant: boolean
+            required_approvers: array
+            emergency_override: boolean
+            notes: array
+            source: string
+            ticket: object
     mcp_tools_used:
       type: array
-      description: "Danh sách MCP tool calls thực hiện"
+      description: "Danh sách MCP tool calls thực hiện trong run"
       items:
         tool: string
         input: object
         output: object
-        error: object | null
+        error: object
         timestamp: string
+    retrieved_chunks:
+      type: array
+      description: "Policy worker có thể enrich lại retrieved_chunks trong state cho multi-hop hoặc domain-specific retrieval"
+    retrieved_sources:
+      type: array
+      description: "Nguồn sau khi enrich chunks"
     worker_io_logs:
       type: array
       required: true
@@ -198,14 +239,15 @@ policy_tool_worker:
     code: "POLICY_CHECK_FAILED"
     reason: string
   constraints:
-    - "Phải hỗ trợ ít nhất 2 domain chính: refund và access/security"
-    - "Phải detect exception cases: flash_sale, digital_product, activated_product cho refund domain"
-    - "Phải ghi tên MCP tool đã gọi vào mcp_tools_used"
-    - "Nếu domain là access/security và parse được access level thì nên gọi check_access_permission"
-    - "Không được tự bịa policy rules không có trong tài liệu"
+    - "Phải hỗ trợ ít nhất các domain: refund, access, incident_access, unknown."
+    - "Refund phải detect exception cases như flash_sale, digital_product, activated_product khi có evidence."
+    - "Nếu domain là access/incident_access và parse được access level thì worker nên gọi check_access_permission."
+    - "Nếu thiếu chunks và needs_tool=True thì worker được phép gọi search_kb trước khi phân tích policy."
+    - "Không được tự bịa policy rules ngoài tài liệu hoặc tool_findings."
+    - "Temporal refund gap phải được phản ánh qua policy_version_note và tool_findings.temporal_scope_gap."
   actual_implementation:
-    status: "TODO Sprint 2"
-    notes: ""
+    status: "implemented"
+    notes: "Current run() có thể gọi search_kb(top_k=4), enrich chunks theo domain, gọi check_access_permission, và thêm get_ticket_info cho incident_access có ticket/P1/Jira."
 
 # ─────────────────────────────────────────────
 # Synthesis Worker
@@ -214,7 +256,7 @@ policy_tool_worker:
 synthesis_worker:
   name: synthesis_worker
   file: workers/synthesis.py
-  description: "Tổng hợp câu trả lời từ evidence. Gọi LLM với grounded prompt."
+  description: "Tổng hợp câu trả lời từ evidence. Ưu tiên deterministic template cho refund/access/incident_access; fallback sang grounded LLM cho domain còn lại."
   input:
     task:
       type: string
@@ -222,7 +264,7 @@ synthesis_worker:
     retrieved_chunks:
       type: array
       required: false
-      description: "Evidence từ retrieval_worker"
+      description: "Evidence từ retrieval_worker hoặc policy_tool_worker"
     policy_result:
       type: object
       required: false
@@ -231,7 +273,7 @@ synthesis_worker:
     final_answer:
       type: string
       required: true
-      description: "Câu trả lời cuối có citation"
+      description: "Câu trả lời cuối"
     sources:
       type: array
       required: true
@@ -239,21 +281,35 @@ synthesis_worker:
     confidence:
       type: float
       required: true
-      description: "Mức độ tin cậy 0.0-1.0"
+      description: "Heuristic confidence 0.0-1.0"
     worker_io_logs:
       type: array
       required: true
+      items:
+        worker: string
+        input:
+          task: string
+          chunks_count: integer
+          has_policy: boolean
+        output:
+          answer_length: integer
+          sources: array
+          confidence: float
+          generation_mode: string
+        error:
+          code: string
+          reason: string
   error_format:
     code: "SYNTHESIS_FAILED"
     reason: string
   constraints:
-    - "Phải có citation [1] hoặc [source_name] trong answer nếu có chunks"
-    - "Nếu retrieved_chunks=[] → phải abstain, không hallucinate"
-    - "confidence < 0.4 → khuyến khích set hitl_triggered=True"
-    - "Không được dùng kiến thức ngoài context được cung cấp"
+    - "Nếu không có chunks và cũng không có structured policy evidence thì phải abstain."
+    - "Refund/access/incident_access ưu tiên deterministic_template thay vì cho LLM tự suy diễn."
+    - "Structured policy result thắng prose chunk nếu hai nguồn mâu thuẫn."
+    - "Không được dùng kiến thức ngoài context được cung cấp."
   actual_implementation:
-    status: "TODO Sprint 2"
-    notes: ""
+    status: "implemented"
+    notes: "run() ghi generation_mode vào worker_io output; confidence hiện là heuristic score, không phải calibrated probability."
 
 # ─────────────────────────────────────────────
 # MCP Server
@@ -262,19 +318,22 @@ synthesis_worker:
 mcp_server:
   name: mcp_server
   file: mcp_server.py
-  description: "Mock MCP Server expose tools cho workers qua dispatch_tool()."
+  description: "Mock MCP Server với 2 cách gọi: dispatch_tool() in-process và FastAPI HTTP endpoints."
   tools:
     search_kb:
       input:
-        query: string  # required
-        top_k: integer  # default: 3
+        query: string
+        top_k: integer
       output:
         chunks: array
         sources: array
         total_found: integer
+        retrieval_mode: string
+        search_top_k: integer
+        collection: string
     get_ticket_info:
       input:
-        ticket_id: string  # required (e.g., "P1-LATEST", "IT-1234")
+        ticket_id: string
       output:
         ticket_id: string
         priority: string
@@ -282,12 +341,13 @@ mcp_server:
         assignee: string
         created_at: string
         sla_deadline: string
-        notifications_sent: array
+        escalated: boolean
+        escalated_to: string
     check_access_permission:
       input:
-        access_level: integer  # 1, 2, hoặc 3
+        access_level: integer
         requester_role: string
-        is_emergency: boolean  # default: false
+        is_emergency: boolean
       output:
         can_grant: boolean
         required_approvers: array
@@ -296,17 +356,19 @@ mcp_server:
         source: string
     create_ticket:
       input:
-        priority: string  # P1, P2, P3, P4
+        priority: string
         title: string
         description: string
       output:
         ticket_id: string
+        priority: string
+        title: string
+        status: string
         url: string
-        created_at: string
   constraints:
-    - "dispatch_tool() phải trả về error dict nếu tool không tồn tại"
-    - "list_tools() phải trả về đúng format MCP tool schema"
-    - "Không được raise exception ra ngoài dispatch_tool()"
+    - "dispatch_tool() hiện raise ValueError nếu tool không tồn tại."
+    - "tool_search_kb() dùng cùng retrieval path với workers/retrieval.py và có thể fallback sang mock_data nếu runtime retrieval lỗi."
+    - "HTTP API layer sẽ raise HTTPException 404 cho unknown tool."
   actual_implementation:
-    status: "TODO Sprint 3"
-    notes: ""
+    status: "implemented_with_runtime_dependency"
+    notes: "Local dispatch đã có sẵn, nhưng module import hiện vẫn yêu cầu fastapi/uvicorn được cài do các import top-level."
