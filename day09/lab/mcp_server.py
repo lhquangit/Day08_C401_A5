@@ -104,10 +104,22 @@ def tool_search_kb(query: str, top_k: int = 3) -> dict:
     try:
         import sys
         sys.path.insert(0, os.path.dirname(__file__))
-        from workers.retrieval import retrieve_dense
-        chunks = retrieve_dense(query, top_k=top_k)
+        from workers.retrieval import retrieve
+        chunks, retrieval_info = retrieve(
+            query,
+            top_k=max(top_k, 4),
+            search_top_k=max(top_k, 8),
+            use_rerank=True,
+        )
         sources = list({c["source"] for c in chunks})
-        return {"chunks": chunks, "sources": sources, "total_found": len(chunks)}
+        return {
+            "chunks": chunks,
+            "sources": sources,
+            "total_found": len(chunks),
+            "retrieval_mode": retrieval_info.get("mode"),
+            "search_top_k": retrieval_info.get("search_top_k"),
+            "collection": retrieval_info.get("collection"),
+        }
     except Exception as e:
         return {
             "chunks": [{"text": f"[MOCK] Fallback mode. Cannot query DB: {e}", "source": "mock_data", "score": 0.5}],
@@ -171,6 +183,16 @@ TOOL_REGISTRY = {
     "check_access_permission": tool_check_access_permission,
     "create_ticket": tool_create_ticket,
 }
+
+
+def dispatch_tool(tool_name: str, tool_input: dict) -> dict:
+    """
+    Local in-process dispatcher để worker có thể gọi MCP mock mà không cần HTTP server.
+    """
+    if tool_name not in TOOL_REGISTRY:
+        raise ValueError(f"Tool '{tool_name}' không tồn tại.")
+    tool_fn = TOOL_REGISTRY[tool_name]
+    return tool_fn(**tool_input)
 
 # ─────────────────────────────────────────────
 # API Endpoints (FastAPI)

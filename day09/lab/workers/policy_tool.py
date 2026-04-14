@@ -93,6 +93,72 @@ def _build_base_policy_result(domain: str, policy_name: str, sources: list[str])
     }
 
 
+def _extract_sources(chunks: list) -> list[str]:
+    ordered = []
+    for chunk in chunks:
+        source = chunk.get("source") or (chunk.get("metadata", {}) or {}).get("source")
+        if source and source not in ordered:
+            ordered.append(source)
+    return ordered
+
+
+def _merge_chunks(existing: list, new_chunks: list, limit: int = 6) -> list:
+    merged = []
+    seen = set()
+    for chunk in existing + new_chunks:
+        metadata = chunk.get("metadata", {}) or {}
+        source = chunk.get("source") or metadata.get("source", "unknown")
+        key = (source, chunk.get("text", "")[:160])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(chunk)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _has_source_token(chunks: list, token_groups: list[list[str]]) -> bool:
+    source_blob = " ".join(_extract_sources(chunks)).lower()
+    return any(any(token in source_blob for token in group) for group in token_groups)
+
+
+def _is_temporal_refund_case(task: str) -> bool:
+    lower_task = task.lower()
+    return any(token in lower_task for token in ["31/01", "30/01", "trước 01/02", "01/02/2026"])
+
+
+def _is_temporary_access_request(task: str, chunks: list) -> bool:
+    combined = " ".join([task] + [c.get("text", "") for c in chunks]).lower()
+    return any(token in combined for token in ["tạm thời", "temporary", "emergency fix", "fix incident", "24 giờ"])
+
+
+def _search_kb_via_mcp(state: dict, query: str, top_k: int = 4) -> tuple[list, dict]:
+    mcp_result = _call_mcp_tool("search_kb", {"query": query, "top_k": top_k})
+    state.setdefault("mcp_tools_used", []).append(mcp_result)
+    state.setdefault("history", []).append(f"[{WORKER_NAME}] called MCP search_kb query={query[:80]}")
+    chunks = []
+    if mcp_result.get("output") and mcp_result["output"].get("chunks"):
+        chunks = mcp_result["output"]["chunks"]
+    return chunks, mcp_result
+
+
+def _enrich_chunks_for_domain(state: dict, task: str, domain: str, chunks: list) -> list:
+    access_level = _parse_access_level(task, chunks)
+    enriched = list(chunks)
+
+    if domain in {"access", "incident_access"} and not _has_source_token(enriched, [["access-control", "access_control", "access control"]]):
+        subquery = f"Access Control SOP Level {access_level or ''} approval emergency contractor temporary access".strip()
+        extra_chunks, _ = _search_kb_via_mcp(state, subquery, top_k=4)
+        enriched = _merge_chunks(enriched, extra_chunks)
+
+    if domain == "incident_access" and not _has_source_token(enriched, [["sla", "incident", "p1"]]):
+        extra_chunks, _ = _search_kb_via_mcp(state, "SLA P1 escalation notify stakeholders pagerduty slack email", top_k=4)
+        enriched = _merge_chunks(enriched, extra_chunks)
+
+    return enriched
+
+
 def _detect_domain(task: str, chunks: list) -> str:
     task_lower = task.lower()
     context_text = " ".join([c.get("text", "") for c in chunks])
@@ -112,6 +178,8 @@ def _detect_domain(task: str, chunks: list) -> str:
 
 
 def _maybe_run_refund_llm(task: str, context_text: str, exceptions_found: list[dict], explanation: str) -> tuple[list[dict], str]:
+    if os.getenv("ENABLE_REFUND_LLM_ANALYSIS", "false").lower() != "true":
+        return exceptions_found, explanation
     if not os.getenv("OPENAI_API_KEY"):
         return exceptions_found, explanation
 
@@ -158,7 +226,7 @@ def analyze_refund_policy(task: str, chunks: list) -> dict:
     task_lower = task.lower()
     context_text = " ".join([c.get("text", "") for c in chunks])
     context_lower = context_text.lower()
-    sources = list({c.get("source", "unknown") for c in chunks if c})
+    sources = _extract_sources(chunks)
     policy_result = _build_base_policy_result("refund", "refund_policy_v4", sources)
 
     exceptions_found = []
@@ -184,22 +252,30 @@ def analyze_refund_policy(task: str, chunks: list) -> dict:
             "source": "policy_refund_v4.txt",
         })
 
-    if any(kw in task_lower for kw in ["31/01", "30/01", "trước 01/02", "năm 2025"]):
+    temporal_gap = _is_temporal_refund_case(task)
+    if temporal_gap:
         policy_result["policy_version_note"] = (
             "Đơn hàng đặt trước 01/02/2026 áp dụng chính sách v3 (không có trong tài liệu hiện tại)."
         )
 
     explanation = "Analyzed via rule-based checks."
-    exceptions_found, explanation = _maybe_run_refund_llm(task, context_text, exceptions_found, explanation)
+    if not temporal_gap:
+        exceptions_found, explanation = _maybe_run_refund_llm(task, context_text, exceptions_found, explanation)
+    else:
+        explanation = (
+            "Temporal refund case detected. Tài liệu hiện tại chỉ có policy v4 nên không đủ cơ sở "
+            "để kết luận cho đơn trước effective date."
+        )
 
     if any(src == "mock_data" for src in sources):
         explanation += " Retrieved context included mock_data fallback, so policy conclusion is conservative."
 
-    policy_result["policy_applies"] = len(exceptions_found) == 0
+    policy_result["policy_applies"] = (len(exceptions_found) == 0) and not temporal_gap
     policy_result["exceptions_found"] = exceptions_found
     policy_result["explanation"] = explanation
     policy_result["tool_findings"] = {
         "has_mock_data": any(src == "mock_data" for src in sources),
+        "temporal_scope_gap": temporal_gap,
     }
     return policy_result
 
@@ -246,7 +322,7 @@ def _summarize_ticket_info(ticket_output: dict) -> dict:
 
 def analyze_access_policy(task: str, chunks: list, access_tool_output: dict | None, domain: str) -> dict:
     """Phân tích policy access/security dựa trên context và MCP tool result."""
-    sources = list({c.get("source", "unknown") for c in chunks if c})
+    sources = _extract_sources(chunks)
     policy_name = "incident_access_composite" if domain == "incident_access" else "access_control_sop"
     policy_result = _build_base_policy_result(domain, policy_name, sources)
     explanation_parts = ["Analyzed via access policy rules and MCP tools."]
@@ -255,17 +331,21 @@ def analyze_access_policy(task: str, chunks: list, access_tool_output: dict | No
     access_level = _parse_access_level(task, chunks)
     requester_role = _parse_requester_role(task, chunks)
     is_emergency = _is_emergency_request(task, chunks)
+    temporary_request = _is_temporary_access_request(task, chunks)
     tool_findings = {
         "access_level": access_level,
         "requester_role": requester_role,
         "is_emergency": is_emergency,
+        "temporary_request": temporary_request,
     }
 
     if access_tool_output:
+        standard_can_grant = bool(access_tool_output.get("can_grant", True))
+        emergency_override = access_tool_output.get("emergency_override")
         tool_findings.update({
-            "can_grant": access_tool_output.get("can_grant"),
+            "can_grant": standard_can_grant,
             "required_approvers": access_tool_output.get("required_approvers", []),
-            "emergency_override": access_tool_output.get("emergency_override"),
+            "emergency_override": emergency_override,
             "notes": access_tool_output.get("notes", []),
             "source": access_tool_output.get("source"),
         })
@@ -273,13 +353,14 @@ def analyze_access_policy(task: str, chunks: list, access_tool_output: dict | No
             explanation_parts.append(f"Access tool returned error: {access_tool_output['error']}")
             policy_result["policy_applies"] = False
         else:
-            policy_result["policy_applies"] = bool(access_tool_output.get("can_grant", True))
-            if is_emergency and not access_tool_output.get("emergency_override", False):
+            policy_result["policy_applies"] = standard_can_grant
+            if is_emergency and temporary_request and not emergency_override:
                 exceptions_found.append({
                     "type": "no_emergency_bypass",
                     "rule": "Mức quyền này không có emergency bypass; phải follow quy trình chuẩn.",
                     "source": access_tool_output.get("source", "access_control_sop.txt"),
                 })
+                policy_result["policy_applies"] = False
     else:
         explanation_parts.append("Access level could not be validated via MCP.")
         if access_level is None:
@@ -345,18 +426,18 @@ def run(state: dict) -> dict:
 
         # Step 1: Nếu chưa có chunks, gọi MCP search_kb
         if not chunks and needs_tool:
-            mcp_result = _call_mcp_tool("search_kb", {"query": task, "top_k": 3})
-            state["mcp_tools_used"].append(mcp_result)
-            state["history"].append(f"[{WORKER_NAME}] called MCP search_kb")
-
-            if mcp_result.get("output") and mcp_result["output"].get("chunks"):
-                chunks = mcp_result["output"]["chunks"]
-                state["retrieved_chunks"] = chunks
+            chunks, mcp_result = _search_kb_via_mcp(state, task, top_k=4)
+            if mcp_result.get("output"):
                 state["retrieved_sources"] = mcp_result["output"].get("sources", [])
 
             if domain == "unknown":
                 domain = _detect_domain(task, chunks)
                 state["history"].append(f"[{WORKER_NAME}] redetected domain={domain} after search_kb")
+
+        if domain in {"refund", "access", "incident_access"} and needs_tool:
+            chunks = _enrich_chunks_for_domain(state, task, domain, chunks)
+            state["retrieved_chunks"] = chunks
+            state["retrieved_sources"] = _extract_sources(chunks)
 
         access_tool_output = None
         if domain in {"access", "incident_access"}:

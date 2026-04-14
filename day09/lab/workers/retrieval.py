@@ -354,18 +354,43 @@ def _choose_retrieval_mode(query: str) -> str:
         return configured
 
     lower_query = query.lower()
-    if any(token in lower_query for token in ["approval matrix", "err-", "code", "mã lỗi"]):
+    hybrid_tokens = [
+        "approval matrix",
+        "err-",
+        "mã lỗi",
+        "contractor",
+        "admin access",
+        "level 2",
+        "level 3",
+        "level 4",
+        "tạm thời",
+        "temporary",
+        "flash sale",
+        "license",
+        "subscription",
+    ]
+    if any(token in lower_query for token in hybrid_tokens):
+        return "hybrid"
+    if any(token in lower_query for token in ["p1", "ticket", "sla"]) and any(
+        token in lower_query for token in ["access", "cấp quyền", "contractor"]
+    ):
         return "hybrid"
     return "dense"
 
 
-def retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> tuple[list[dict], dict]:
+def retrieve(
+    query: str,
+    top_k: int = DEFAULT_TOP_K,
+    mode_override: str | None = None,
+    search_top_k: int | None = None,
+    use_rerank: bool | None = None,
+) -> tuple[list[dict], dict]:
     """
     Entry retrieval phù hợp index Day 08 nhưng chạy hoàn toàn trong Day 09.
     """
-    mode = _choose_retrieval_mode(query)
-    search_k = int(os.getenv("RETRIEVAL_SEARCH_TOP_K", max(top_k, 8)))
-    use_rerank = _parse_bool(os.getenv("RETRIEVAL_USE_RERANK"), default=True)
+    mode = (mode_override or _choose_retrieval_mode(query)).strip().lower()
+    search_k = search_top_k if search_top_k is not None else int(os.getenv("RETRIEVAL_SEARCH_TOP_K", max(top_k, 8)))
+    rerank_enabled = use_rerank if use_rerank is not None else _parse_bool(os.getenv("RETRIEVAL_USE_RERANK"), default=True)
 
     if mode == "dense":
         candidates = []
@@ -382,7 +407,7 @@ def retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> tuple[list[dict], dict]:
     else:
         raise RetrievalUnavailableError(f"Retrieval mode không hợp lệ: {mode}")
 
-    if use_rerank:
+    if rerank_enabled:
         selected = _rerank_locally(query, candidates, top_k=top_k)
     else:
         selected = _dedupe_chunks(candidates, top_k=top_k)
@@ -391,7 +416,7 @@ def retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> tuple[list[dict], dict]:
     retrieval_info = {
         "mode": mode,
         "search_top_k": search_k,
-        "use_rerank": use_rerank,
+        "use_rerank": rerank_enabled,
         "db_path": db_path,
         "collection": collection_name,
     }

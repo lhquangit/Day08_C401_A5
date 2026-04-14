@@ -102,42 +102,60 @@ def supervisor_node(state: AgentState) -> AgentState:
     task_lower = state["task"].lower()
     state["history"].append(f"[supervisor] received task: {state['task'][:120]}")
 
-    policy_keywords = [
-        "hoàn tiền", "refund", "flash sale", "license", "subscription",
-        "cấp quyền", "access", "level 3", "level 4", "contractor",
-        "admin access", "approval", "quy trình", "security",
+    access_keywords = [
+        "cấp quyền", "access", "level 2", "level 3", "level 4",
+        "contractor", "admin access", "approval", "security",
     ]
+    refund_keywords = ["hoàn tiền", "refund", "flash sale", "license", "subscription", "vip", "store credit"]
     incident_keywords = [
         "p1", "sla", "ticket", "escalation", "incident", "on-call",
         "sự cố", "hotline", "pagerduty",
     ]
-    human_review_keywords = ["err-"]
     risk_keywords = ["err-", "emergency", "khẩn cấp", "2am", "ngoài giờ"]
+    fact_query_markers = [
+        "bao lâu", "bao nhiêu ngày", "mấy bước", "bước đầu tiên",
+        "ai phải", "ai sẽ", "sau bao nhiêu lần", "là bao lâu", "mấy ngày",
+    ]
+    refund_policy_markers = [
+        "có được hoàn tiền", "được hoàn tiền", "flash sale", "license",
+        "subscription", "31/01", "01/02", "trước 01/02", "ngoại lệ",
+    ]
 
-    matched_policy = [kw for kw in policy_keywords if kw in task_lower]
+    matched_access = [kw for kw in access_keywords if kw in task_lower]
+    matched_refund = [kw for kw in refund_keywords if kw in task_lower]
     matched_incident = [kw for kw in incident_keywords if kw in task_lower]
-    matched_human = [kw for kw in human_review_keywords if kw in task_lower]
     matched_risk = [kw for kw in risk_keywords if kw in task_lower]
+    is_fact_query = any(marker in task_lower for marker in fact_query_markers)
+    is_refund_policy = bool(matched_refund) and any(marker in task_lower for marker in refund_policy_markers)
+    is_access_policy = bool(matched_access)
+    is_multi_hop = bool(matched_access) and bool(matched_incident)
 
     risk_high = bool(matched_risk)
-    needs_tool = bool(matched_policy) or any(kw in task_lower for kw in ["ticket", "p1", "jira"])
+    needs_tool = is_access_policy or is_refund_policy or is_multi_hop
 
-    if matched_human:
-        route = "human_review"
-        route_reason = f"matched high-risk unknown error keywords: {', '.join(matched_human)}"
-    elif matched_policy:
+    if is_multi_hop:
         route = "policy_tool_worker"
-        route_reason = f"matched policy/access keywords: {', '.join(matched_policy[:4])}"
-        if matched_incident:
-            route_reason += f" | also saw incident keywords: {', '.join(matched_incident[:3])}"
+        route_reason = (
+            f"multi-hop access + incident query: access={', '.join(matched_access[:3])}"
+            f" | incident={', '.join(matched_incident[:3])}"
+        )
+    elif is_access_policy:
+        route = "policy_tool_worker"
+        route_reason = f"matched access/policy keywords: {', '.join(matched_access[:4])}"
+    elif is_refund_policy and not is_fact_query:
+        route = "policy_tool_worker"
+        route_reason = f"matched refund policy keywords: {', '.join(matched_refund[:4])}"
     elif matched_incident:
         route = "retrieval_worker"
         route_reason = f"matched incident/SLA keywords: {', '.join(matched_incident[:4])}"
+    elif matched_refund:
+        route = "retrieval_worker"
+        route_reason = f"matched refund factual query: {', '.join(matched_refund[:3])}"
     else:
         route = "retrieval_worker"
         route_reason = "no explicit policy/error keyword → fallback retrieval"
 
-    if risk_high and route != "human_review":
+    if risk_high:
         route_reason += f" | risk_high via: {', '.join(matched_risk[:3])}"
 
     state["supervisor_route"] = route
