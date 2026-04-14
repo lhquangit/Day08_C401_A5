@@ -1,4 +1,5 @@
 """
+Nguyễn Đức Hải - 2A202600149
 workers/synthesis.py — Synthesis Worker
 Sprint 2: Tổng hợp câu trả lời từ retrieved_chunks và policy_result.
 
